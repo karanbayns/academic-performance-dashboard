@@ -8,6 +8,7 @@ from querychat import QueryChat
 import chatlas as clt
 from dotenv import load_dotenv
 import os
+import functools
 
 load_dotenv()
 
@@ -30,8 +31,43 @@ involvement_order = ["Low", "Medium", "High"]
 SCHOOL_TYPE_CHOICES = ["Public", "Private"]
 PARENT_EDU_CHOICES = ["High School", "College", "Postgraduate"]
 
-chat = clt.ChatGoogle()
-qc = QueryChat(
+def json_safe_errors(func):
+    """Wrap a querychat tool so a failed call reports its error as text."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        result = func(*args, **kwargs)
+        if isinstance(result, clt.ContentToolResult) and isinstance(result.error, Exception):
+            result.error = str(result.error)
+        return result
+    return wrapper
+
+
+class GeminiQueryChat(QueryChat):
+    """QueryChat whose tools work with Gemini.
+
+    Gemini ignores the "querychat_" prefix on querychat's tool names: it calls
+    update_dashboard, not querychat_update_dashboard, which chatlas rejects as
+    "Unknown tool", and it refuses a prefixed and an unprefixed declaration
+    together ("Duplicate function declaration"). So each tool is registered
+    under its short name only. chatlas also can't send exception objects back
+    to Gemini (not JSON serializable), so tool errors are turned into text.
+    """
+
+    def client(self, **kwargs):
+        chat = super().client(**kwargs)
+        chat.set_tools([
+            clt.Tool.from_func(
+                json_safe_errors(tool.func),
+                name=tool.name.removeprefix("querychat_"),
+                annotations=tool.annotations,
+            )
+            for tool in chat.get_tools()
+        ])
+        return chat
+
+
+chat = clt.ChatGoogle(model="gemini-3.5-flash-lite")
+qc = GeminiQueryChat(
     t.execute(), 
     "performance_data",
     client=chat,
